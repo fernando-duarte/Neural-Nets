@@ -8,14 +8,22 @@ Pkg.add("Complementarity")
 Pkg.add("NLopt")
 Pkg.add("JuMP")
 Pkg.add("Ipopt")
+Pkg.add("SpecialFunctions")
+Pkg.add("ForwardDiff")
+Pkg.add("AmplNLWriter")
+Pkg.add("Cbc")
 
 using DataFrames, XLSX
 using Missings
 
+using SpecialFunctions
+using ForwardDiff
+using Cbc, AmplNLWriter
 using LinearAlgebra, Random, Distributions, NLsolve, Complementarity
 using Test
 using NLopt
-using JuMP, Ipopt
+using JuMP
+using Ipopt
 
 
 
@@ -89,6 +97,7 @@ A0 = rand(rng,N,N);[A0[i,i]=0.0 for i=1:N];A0=LowerTriangular(A0);
 
 #m = Model(Ipopt.Optimizer) # settings for the solver
 m = Model(with_optimizer(Ipopt.Optimizer, start_with_resto="yes", linear_solver="mumps"))
+#m = Model(() -> AmplNLWriter.Optimizer("bonmin"))
 
 @variable(m, 0<=p[i=1:N,j=1:D]<=data.p_bar[i], start = data.p_bar[i]) 
 @variable(m, 0<=c[i=1:N]<=data.assets[i], start = data_nm.c[i])  
@@ -208,10 +217,15 @@ save("/home/ec2-user/SageMaker/Test-AWS/net_opt.jld", "Asol", Asol,"data",data)
 # lossfun, gradfun, fg!, p0 = optfuns(loss, pars)
 # res = Optim.optimize(Optim.only_fg!(fg!), p0, Optim.Options(iterations=1000, store_trace=true))
 
+import Pkg
+#Pkg.build("HDF5")
+#Pkg.build("CodecZlib")
+#Pkg.build("FFTW")
 
 Pkg.add("Surrogates")
-using Surrogates
-using QuadGK
+Pkg.add("QuadGK")
+using QuadGK, Surrogates
+
 obj = x -> 3*x + log(x)
 a = 1.0
 b = 4.0
@@ -227,49 +241,6 @@ int = quadgk(obj,a,b)
 int_val_true = int[1]-int[2]
 @test abs(int_1D - int_val_true) < 10^-5
 
-
-using JuMP, AmplNLWriter, CoinOptServices
-m = Model(solver=AmplNLSolver(CoinOptServices.couenne))
-# m = Model(solver=AmplNLSolver(CoinOptServices.bonmin))
-
-@variable(m, x>=0)
-@variable(m, y[1:2])
-@variable(m, s[1:5]>=0)
-@variable(m, l[1:5]>=0)
-
-@objective(m, Min, -x -3y[1] + 2y[2])
-
-@constraint(m, -2x +  y[1] + 4y[2] + s[1] ==  16)
-@constraint(m,  8x + 3y[1] - 2y[2] + s[2] ==  48)
-@constraint(m, -2x +  y[1] - 3y[2] + s[3] == -12)
-@constraint(m,       -y[1]         + s[4] ==   0)
-@constraint(m,        y[1]         + s[5] ==   4)
-@constraint(m, -1 + l[1] + 3l[2] +  l[3] - l[4] + l[5] == 0)
-@constraint(m,     4l[2] - 2l[2] - 3l[3]               == 0)
-for i in 1:5
-  @NLconstraint(m, l[i] * s[i] == 0)
-end
-
-solve(m)
-
-println("** Optimal objective function value = ", getobjectivevalue(m))
-println("** Optimal x = ", getvalue(x))
-println("** Optimal y = ", getvalue(y))
-println("** Optimal s = ", getvalue(s))
-println("** Optimal l = ", getvalue(l))
-
-
-
-Pkg.add("CoinOptServices")
-Pkg.add("AmplNLWriter")
-
-
-using JuMP, AmplNLWriter, CoinOptServices
-m = Model(solver=AmplNLSolver(CoinOptServices.couenne))
-
-
-using JuMP, AmplNLWriter, CoinOptServices
-m = Model(solver=AmplNLSolver(CoinOptServices.bonmin))
 
 
 https://github.com/JuliaSmoothOptimizers/NCL.jl

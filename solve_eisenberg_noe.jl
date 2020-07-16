@@ -94,7 +94,7 @@ using NLopt
 using JuMP, Ipopt
 using Complementarity
 
-#m = Model(Ipopt.Optimizer) # settings for the solver
+m = Model(Ipopt.Optimizer) # settings for the solver
 m = Model(solver=NLoptSolver(algorithm=:LD_MMA))
 
 #set_optimizer_attributes(m, "tol" => 1e-12,"dual_inf_tol" => 1e-12,"constr_viol_tol" => 1e-12,"compl_inf_tol" => 1e-12,"acceptable_tol"=> 1e-12)

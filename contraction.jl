@@ -1,5 +1,10 @@
 ## load packages
-using Pkg
+import Pkg
+#Pkg.build("SpecialFunctions")
+
+Pkg.add("SpecialFunctions")
+using SpecialFunctions
+
 Pkg.add("DataFrames")
 Pkg.add("XLSX")
 Pkg.add("Missings")
@@ -9,14 +14,27 @@ Pkg.add("NLopt")
 Pkg.add("JuMP")
 Pkg.add("Ipopt")
 
+Pkg.add("ForwardDiff")
+Pkg.add("GraphRecipes")
+Pkg.add("LightGraphs")
+Pkg.add("SimpleWeightedGraphs")
+Pkg.build("GR")
+Pkg.add("Gadfly")
+
 using DataFrames, XLSX
 using Missings
-
+using ForwardDiff
 using LinearAlgebra, Random, Distributions, NLsolve, Complementarity
 using Test
 using NLopt
-using JuMP, Ipopt
+using JuMP
+using Ipopt
 
+using GraphRecipes
+using Plots
+using Gadfly
+using LightGraphs
+using SimpleWeightedGraphs
 
 
 ## load data
@@ -43,6 +61,10 @@ N = size(data,1) # number of nodes
 # rescale units
 units = 1e6;
 data[:,[:w, :c, :assets, :p_bar, :b]] .= data[!,[:w, :c, :assets, :p_bar, :b]]./units
+
+# fake missing data to make problem feasible
+data.b[:] .= missing
+data.c[:] .= missing
 
 # create network variables
 data.f = data.p_bar .- data.b # inside liabilities
@@ -77,18 +99,26 @@ g0 = 0.0 # bankruptcy cost
 ## Optimization
 
 # initial values
-D = 1 # number of draws
+D = 2 # number of draws
 rng = MersenneTwister(1234);
-# dist = Beta.(2,fill(2,N,D))
-# x0 = rand.(dist, 1)
+dist = Beta.(2,fill(2,N,D))
+x0 = rand.(dist, 1)
 
 x0 = fill(0.0,N,D)
 A0 = rand(rng,N,N);[A0[i,i]=0.0 for i=1:N];A0=LowerTriangular(A0);
 
 # set up optimization
 
+function contraction(p,x)
+        minfun(data.p_bar, maxfun((1+g0)*(A'*p .+ c .- x.*c) .- g0.*data.p_bar,0)) 
+end
+pow2(x, n) = n <= 0 ? p_bar : contraction(p,x,n-1)
+
+foldl((x,y)->sqrt(x),11231.0,1:4)
+
 #m = Model(Ipopt.Optimizer) # settings for the solver
 m = Model(with_optimizer(Ipopt.Optimizer, start_with_resto="yes", linear_solver="mumps"))
+#m = optimizer_with_attributes(Ipopt.Optimizer, "start_with_resto" => "yes", "linear_solver"=>"mumps")
 
 @variable(m, 0<=p[i=1:N,j=1:D]<=data.p_bar[i], start = data.p_bar[i]) 
 @variable(m, 0<=c[i=1:N]<=data.assets[i], start = data_nm.c[i])  
@@ -131,7 +161,7 @@ JuMP.register(m, :minfun, 2, minfun, autodiff=true)
 # clearing vector
 myexpr = []
 for j=1:D
-    push!(myexpr, (1+g0)*(A'*p[:,j] .+ c .- x0[:,j]) .- g0.*data.p_bar)
+    push!(myexpr, (1+g0)*(A'*p[:,j] .+ c .- x0[:,j].*c) .- g0.*data.p_bar)
 end
     
 @variable(m, aux[i=1:N,j=1:D])
@@ -152,7 +182,7 @@ end
 
 @NLobjective(m, Max , sum(sum( x0[i,j]*c[i]+data.p_bar[i]-p[i,j] for i=1:N)/D for j=1:D) ) #*sum(x[i]+p_bar[i]-p[i] for i=1:N) 
 
-unset_silent(m)
+#unset_silent(m)
 JuMP.optimize!(m)
 
 termination_status(m)
@@ -179,22 +209,30 @@ end
 @test all(0 .<=psol)
 @test all(0 .<=Asol.<=1)
 
+spy(Asol)
 
+Aplot = deepcopy(Asol)
+Aplot[Aplot.<1e-3] .=0
 
+# attributes here: https://docs.juliaplots.org/latest/generated/graph_attributes/
+#method `:spectral`, `:sfdp`, `:circular`, `:shell`, `:stress`, `:spring`, `:tree`, `:buchheim`, `:arcdiagram` or `:chorddiagram`.
 
+graphplot(LightGraphs.DiGraph(Aplot),
+          nodeshape=:circle,
+          markersize = 0.05,
+          node_weights = data.assets,
+          markercolor = range(colorant"yellow", stop=colorant"red", length=n),
+          names = data.nm_short,
+          fontsize = 8,
+          linecolor = :darkgrey,
+          edgewidth = (s,d,w)->500*Asol[s,d],
+          arrow=true,
+          method= :circular, #:chorddiagram,:circular,:shell
+          )
 
-
-
-
-
-
-
-
-
-
-Pkg.add("JLD")
-using JLD
-save("/home/ec2-user/SageMaker/Test-AWS/net_opt.jld", "Asol", Asol,"data",data)
+# Pkg.add("JLD")
+# using JLD
+# save("/home/ec2-user/SageMaker/Test-AWS/net_opt.jld", "Asol", Asol,"data",data)
 
 
 
@@ -209,71 +247,49 @@ save("/home/ec2-user/SageMaker/Test-AWS/net_opt.jld", "Asol", Asol,"data",data)
 # res = Optim.optimize(Optim.only_fg!(fg!), p0, Optim.Options(iterations=1000, store_trace=true))
 
 
-Pkg.add("Surrogates")
-using Surrogates
-using QuadGK
-obj = x -> 3*x + log(x)
-a = 1.0
-b = 4.0
-x = sample(2000,a,b,SobolSample())
-y = obj.(x)
-alpha = 2.0
-n = 6
-my_loba = LobacheskySurrogate(x,y,alpha,n,a,b)
+# import Pkg; Pkg.add("DistributedArrays")
 
-#1D integral
-int_1D = lobachesky_integral(my_loba,a,b)
-int = quadgk(obj,a,b)
-int_val_true = int[1]-int[2]
-@test abs(int_1D - int_val_true) < 10^-5
+# using Distributed
+# using DistributedArrays
+# #t = @async addprocs(8)
+# t = addprocs(8)
+# nprocs()
+# nworkers()
+
+# d=dzeros(100,100)
+# d[:L]
+
+# rmprocs(workers())
+
+# @everywhere using SharedArrays
 
 
-using JuMP, AmplNLWriter, CoinOptServices
-m = Model(solver=AmplNLSolver(CoinOptServices.couenne))
-# m = Model(solver=AmplNLSolver(CoinOptServices.bonmin))
+# # Utilize workers as and when they come online
+# if nprocs() > 1   # Ensure at least one new worker is available
+   
+# end
 
-@variable(m, x>=0)
-@variable(m, y[1:2])
-@variable(m, s[1:5]>=0)
-@variable(m, l[1:5]>=0)
+# if istaskdone(t)   # Check if `addprocs` has completed to ensure `fetch` doesn't block
+#     if nworkers() == N
+#         new_pids = fetch(t)
+#     else
+#         fetch(t)
+#     end
+# end
 
-@objective(m, Min, -x -3y[1] + 2y[2])
+# S = SharedArray{Int,2}((3,4), init = S -> S[localindices(S)] = repeat([myid()], length(localindices(S))))
+# 3×4 SharedArray{Int64,2}:
 
-@constraint(m, -2x +  y[1] + 4y[2] + s[1] ==  16)
-@constraint(m,  8x + 3y[1] - 2y[2] + s[2] ==  48)
-@constraint(m, -2x +  y[1] - 3y[2] + s[3] == -12)
-@constraint(m,       -y[1]         + s[4] ==   0)
-@constraint(m,        y[1]         + s[5] ==   4)
-@constraint(m, -1 + l[1] + 3l[2] +  l[3] - l[4] + l[5] == 0)
-@constraint(m,     4l[2] - 2l[2] - 3l[3]               == 0)
-for i in 1:5
-  @NLconstraint(m, l[i] * s[i] == 0)
-end
-
-solve(m)
-
-println("** Optimal objective function value = ", getobjectivevalue(m))
-println("** Optimal x = ", getvalue(x))
-println("** Optimal y = ", getvalue(y))
-println("** Optimal s = ", getvalue(s))
-println("** Optimal l = ", getvalue(l))
+# length(Sys.cpu_info())
+# Threads.nthreads()
 
 
+# addprocs(8)
 
-Pkg.add("CoinOptServices")
-Pkg.add("AmplNLWriter")
-
-
-using JuMP, AmplNLWriter, CoinOptServices
-m = Model(solver=AmplNLSolver(CoinOptServices.couenne))
+# #BLAS.set_num_threads(1)
+# @everywhere using <modulename> or @everywhere include("file.jl").
 
 
-using JuMP, AmplNLWriter, CoinOptServices
-m = Model(solver=AmplNLSolver(CoinOptServices.bonmin))
+# Sys.free_memory()/2^20
 
-
-https://github.com/JuliaSmoothOptimizers/NCL.jl
-https://github.com/JuliaSmoothOptimizers/JSOSuite.jl
-optim.jl
-ModelingToolkit.jl
- SciML /AutoOptimize.jl 
+#  versioninfo(verbose=true)
